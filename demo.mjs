@@ -1,5 +1,5 @@
 import { startDemo } from './server.mjs';
 
-const { api, receiver } = await startDemo();
+const { api, receiver } = await startDemo(3000, 3001, Number(process.env.RECEIVER_DELAY_MS ?? 0));
 console.log(`API listening on http://127.0.0.1:${api.address().port}`);
 console.log(`Demo receiver listening on http://127.0.0.1:${receiver.address().port}`);

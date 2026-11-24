@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { once } from 'node:events';
 
 const host = '127.0.0.1';
@@ -9,18 +10,57 @@ function reply(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
-export async function startDemo(apiPort = 3000, receiverPort = 3001) {
+export async function startDemo(apiPort = 3000, receiverPort = 3001, receiverDelayMs = 0) {
   const receiver = createServer(async (request, response) => {
     for await (const chunk of request) {
       // Drain the demo delivery body before acknowledging it.
     }
+    await delay(receiverDelayMs);
     reply(response, 200, { received: true });
   });
   receiver.listen(receiverPort, host);
   await once(receiver, 'listening');
   const destination = `http://${host}:${receiver.address().port}/webhooks`;
 
+  const queue = [];
+  const statuses = new Map();
+  let draining = false;
+
+  async function drainQueue() {
+    if (draining) return;
+    draining = true;
+
+    while (queue.length > 0) {
+      const event = queue.shift();
+      let status = 'failed';
+      try {
+        const delivery = await fetch(destination, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(event),
+          signal: AbortSignal.timeout(2000),
+        });
+        await delivery.body?.cancel();
+        if (delivery.ok) status = 'delivered';
+      } catch {
+        // A network failure or timeout ends this attempt.
+      }
+      statuses.set(event.id, status);
+    }
+
+    draining = false;
+  }
+
   const api = createServer(async (request, response) => {
+    const eventPath = /^\/events\/([^/]+)$/.exec(request.url);
+    if (request.method === 'GET' && eventPath) {
+      const id = eventPath[1];
+      const status = statuses.get(id);
+      return status
+        ? reply(response, 200, { id, status })
+        : reply(response, 404, { error: 'Event not found' });
+    }
+
     if (request.method !== 'POST' || request.url !== '/events') {
       return reply(response, 404, { error: 'Route not found' });
     }
@@ -48,21 +88,11 @@ export async function startDemo(apiPort = 3000, receiverPort = 3001) {
     }
 
     const event = { id: randomUUID(), type: input.type, data: input.data };
-    try {
-      const delivery = await fetch(destination, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(event),
-        signal: AbortSignal.timeout(2000),
-      });
-      await delivery.body?.cancel();
-      if (delivery.ok) {
-        return reply(response, 201, { id: event.id, status: 'delivered' });
-      }
-    } catch {
-      // The caller receives the same failure status for a timeout or connection error.
-    }
-    reply(response, 502, { id: event.id, status: 'failed' });
+    statuses.set(event.id, 'pending');
+    queue.push(event);
+    setImmediate(drainQueue);
+    response.setHeader('location', `/events/${event.id}`);
+    reply(response, 202, { id: event.id, status: 'pending' });
   });
 
   api.listen(apiPort, host);
