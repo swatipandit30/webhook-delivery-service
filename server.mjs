@@ -11,12 +11,16 @@ function reply(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
-export async function startDemo(apiPort = 3000, receiverPort = 3001, receiverDelayMs = 0, databasePath = ':memory:') {
+export async function startDemo(apiPort = 3000, receiverPort = 3001, receiverDelayMs = 0, databasePath = ':memory:', receiverFailures = 0) {
   const receiver = createServer(async (request, response) => {
     for await (const chunk of request) {
       // Drain the demo delivery body before acknowledging it.
     }
     await delay(receiverDelayMs);
+    if (receiverFailures > 0) {
+      receiverFailures -= 1;
+      return reply(response, 503, { received: false });
+    }
     reply(response, 200, { received: true });
   });
   const queue = openQueue(databasePath);
@@ -38,8 +42,10 @@ export async function startDemo(apiPort = 3000, receiverPort = 3001, receiverDel
 
     try {
       while (!closing) {
-        const event = queue.next();
-        if (!event) break;
+        const job = queue.next();
+        if (!job) break;
+        const { event, number } = job;
+        let httpStatus = null;
         let status = 'failed';
         try {
           const delivery = await fetch(destination, {
@@ -48,12 +54,18 @@ export async function startDemo(apiPort = 3000, receiverPort = 3001, receiverDel
             body: JSON.stringify(event),
             signal: AbortSignal.timeout(2000),
           });
-          await delivery.body?.cancel();
+          httpStatus = delivery.status;
           if (delivery.ok) status = 'delivered';
+          await delivery.body?.cancel();
         } catch {
           // A network failure or timeout ends this attempt.
         }
-        queue.complete(event.id, status);
+        const retryable = httpStatus === null || httpStatus === 429 || httpStatus >= 500;
+        const finishedAt = Date.now();
+        const retryAt = retryable && number < 3
+          ? finishedAt + 500 * 2 ** (number - 1)
+          : null;
+        queue.complete(event.id, number, finishedAt, httpStatus, status, retryAt);
       }
     } catch (error) {
       console.error('Could not process the delivery queue', error);
@@ -68,14 +80,16 @@ export async function startDemo(apiPort = 3000, receiverPort = 3001, receiverDel
     if (request.method === 'GET' && eventPath) {
       const id = eventPath[1];
       let status;
+      let attempts;
       try {
         status = queue.status(id);
+        if (status) attempts = queue.attempts(id);
       } catch (error) {
         console.error('Could not read event status', error);
         return reply(response, 503, { error: 'Could not read event status' });
       }
       return status
-        ? reply(response, 200, { id, status })
+        ? reply(response, 200, { id, status, attempts })
         : reply(response, 404, { error: 'Event not found' });
     }
 
@@ -125,7 +139,9 @@ export async function startDemo(apiPort = 3000, receiverPort = 3001, receiverDel
     queue.close();
     throw error;
   }
+  const poll = setInterval(drainQueue, 100);
   api.once('close', () => {
+    clearInterval(poll);
     closing = true;
     if (!draining) queue.close();
   });

@@ -26,7 +26,11 @@ curl -i http://127.0.0.1:3000/events/EVENT_ID
 
 Replace `EVENT_ID` with the returned ID before running the command. An invalid event returns 400 and an oversized body returns 413. The API writes each event to SQLite before returning 202. Pending deliveries resume on restart and completed statuses remain queryable. The demo uses `deliveries.sqlite` by default. Set `DELIVERY_DB_PATH` to choose another file. Run one demo process per database file.
 
-Each delivery gets one attempt during normal operation. If the process stops after the receiver accepts an event but before SQLite records the outcome, the worker can send the same event again after restart. The event ID stays the same.
+The worker makes up to three attempts. Network errors, timeouts, HTTP 429 and 5xx responses are retried after 500 ms and then 1,000 ms. These demo delays are fixed and ignore Retry-After. `GET /events/EVENT_ID` includes completed attempts, with HTTP status and Unix millisecond timestamps. An event is `pending` between attempts.
+
+To see recovery locally, start the demo with `RECEIVER_FAILURES=2 node demo.mjs`, submit an event, and fetch its status after a few seconds. The receiver returns 503 on its first two requests and 200 thereafter.
+
+If a process stops after the receiver accepts an event but before SQLite records its outcome, the worker can send the same event again after restart. The event ID stays the same.
 
 ```sh
 node --test
@@ -34,5 +38,4 @@ node --test
 
 ## Next milestones
 
-- Retry transient failures and record each attempt.
 - Show delivery history and support replay in a React dashboard.

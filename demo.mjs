@@ -5,6 +5,7 @@ const { api, receiver } = await startDemo(
   3001,
   Number(process.env.RECEIVER_DELAY_MS ?? 0),
   process.env.DELIVERY_DB_PATH || 'deliveries.sqlite',
+  Number(process.env.RECEIVER_FAILURES ?? 0),
 );
 console.log(`API listening on http://127.0.0.1:${api.address().port}`);
 console.log(`Demo receiver listening on http://127.0.0.1:${receiver.address().port}`);

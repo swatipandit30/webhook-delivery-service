@@ -96,3 +96,34 @@ test('resumes a pending delivery from disk and retains its final status', async 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('retries two transient HTTP failures and exposes all outcomes', { timeout: 5000 }, async (context) => {
+  const { api, receiver } = await startDemo(0, 0, 0, ':memory:', 2);
+  context.after(() => {
+    api.close();
+    receiver.close();
+  });
+
+  const origin = `http://127.0.0.1:${api.address().port}`;
+  const accepted = await fetch(origin + '/events', {
+    method: 'POST',
+    body: JSON.stringify({ type: 'order.created', data: {} }),
+  });
+  assert.equal(accepted.status, 202);
+  const location = accepted.headers.get('location');
+  const deadline = Date.now() + 3500;
+  let result;
+  do {
+    result = await (await fetch(origin + location)).json();
+    if (result.status !== 'pending') break;
+    await delay(25);
+  } while (Date.now() < deadline);
+
+  assert.equal(result.status, 'delivered');
+  assert.deepEqual(result.attempts.map((attempt) => attempt.httpStatus), [503, 503, 200]);
+  assert.equal(result.attempts[0].retryAt - result.attempts[0].finishedAt, 500);
+  assert.equal(result.attempts[1].retryAt - result.attempts[1].finishedAt, 1000);
+  assert.ok(result.attempts[1].finishedAt >= result.attempts[0].retryAt);
+  assert.ok(result.attempts[2].finishedAt >= result.attempts[1].retryAt);
+  assert.equal(result.attempts[2].retryAt, null);
+});
