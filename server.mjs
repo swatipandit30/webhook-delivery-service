@@ -75,7 +75,38 @@ export async function startDemo(apiPort = 3000, receiverPort = 3001, receiverDel
     }
   }
 
+  function accept(response, id) {
+    setImmediate(drainQueue);
+    response.setHeader('location', `/events/${id}`);
+    reply(response, 202, { id, status: 'pending' });
+  }
+
   const api = createServer(async (request, response) => {
+    if (request.method === 'GET' && request.url === '/events') {
+      try {
+        return reply(response, 200, { events: queue.recent() });
+      } catch (error) {
+        console.error('Could not list events', error);
+        return reply(response, 503, { error: 'Could not list events' });
+      }
+    }
+
+    const replayPath = /^\/events\/([^/]+)\/replay$/.exec(request.url);
+    if (request.method === 'POST' && replayPath) {
+      request.resume();
+      const id = randomUUID();
+      let result;
+      try {
+        result = queue.replay(replayPath[1], id);
+      } catch (error) {
+        console.error('Could not replay event', error);
+        return reply(response, 503, { error: 'Could not replay event' });
+      }
+      if (result === 'missing') return reply(response, 404, { error: 'Event not found' });
+      if (result === 'conflict') return reply(response, 409, { error: 'Only failed events can be replayed' });
+      return accept(response, id);
+    }
+
     const eventPath = /^\/events\/([^/]+)$/.exec(request.url);
     if (request.method === 'GET' && eventPath) {
       const id = eventPath[1];
@@ -126,9 +157,7 @@ export async function startDemo(apiPort = 3000, receiverPort = 3001, receiverDel
       console.error('Could not save event', error);
       return reply(response, 503, { error: 'Could not save event' });
     }
-    setImmediate(drainQueue);
-    response.setHeader('location', `/events/${event.id}`);
-    reply(response, 202, { id: event.id, status: 'pending' });
+    accept(response, event.id);
   });
 
   api.listen(apiPort, host);

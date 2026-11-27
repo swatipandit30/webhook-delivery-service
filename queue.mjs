@@ -29,7 +29,12 @@ export function openQueue(path) {
   }
 
   const insert = db.prepare('INSERT INTO deliveries (id, payload) VALUES (?, ?)');
-  const lookup = db.prepare('SELECT status FROM deliveries WHERE id = ?');
+  const lookup = db.prepare('SELECT status, payload FROM deliveries WHERE id = ?');
+  const recent = db.prepare(`
+    SELECT id, status, json_extract(payload, '$.type') AS type,
+           json_extract(payload, '$.replayOf') AS replayOf
+    FROM deliveries ORDER BY sequence DESC LIMIT 50
+  `);
   const next = db.prepare(`
     SELECT deliveries.payload, COALESCE(attempt.number, 0) + 1 AS number
     FROM deliveries
@@ -54,6 +59,25 @@ export function openQueue(path) {
     },
     status(id) {
       return lookup.get(id)?.status;
+    },
+    recent() {
+      return recent.all();
+    },
+    replay(sourceId, id) {
+      const source = lookup.get(sourceId);
+      if (!source) return 'missing';
+      if (source.status !== 'failed') return 'conflict';
+
+      const original = JSON.parse(source.payload);
+      const event = {
+        id,
+        type: original.type,
+        data: original.data,
+        replayOf: sourceId,
+        originalEventId: original.originalEventId ?? sourceId,
+      };
+      insert.run(id, JSON.stringify(event));
+      return 'queued';
     },
     attempts(id) {
       return history.all(id);

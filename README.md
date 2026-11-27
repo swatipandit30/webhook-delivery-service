@@ -36,6 +36,19 @@ If a process stops after the receiver accepts an event but before SQLite records
 node --test
 ```
 
+## Replay a failed delivery
+
+Start a fresh demo with `RECEIVER_FAILURES=3 node demo.mjs` and submit one event. After all three attempts fail, run:
+
+```sh
+curl -i -X POST http://127.0.0.1:3000/events/EVENT_ID/replay
+curl http://127.0.0.1:3000/events
+```
+
+Replace `EVENT_ID` with the failed event's ID. Replay returns 202 and a new status URL. The original remains failed with its full attempt history. Each replay request creates a new delivery with a fresh retry budget. The payload includes `replayOf` for the immediate source and `originalEventId` for deduplication across replays. Unknown IDs return 404 and pending or delivered events return 409.
+
+The event list returns up to 50 recent deliveries, newest first, with their IDs, types, statuses and replay sources.
+
 ## Next milestones
 
-- Show delivery history and support replay in a React dashboard.
+- Build the React dashboard for delivery history and replay.

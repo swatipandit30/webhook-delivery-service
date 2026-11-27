@@ -127,3 +127,51 @@ test('retries two transient HTTP failures and exposes all outcomes', { timeout: 
   assert.ok(result.attempts[2].finishedAt >= result.attempts[1].retryAt);
   assert.equal(result.attempts[2].retryAt, null);
 });
+
+test('replays a failed event as a linked delivery while retaining history', { timeout: 6000 }, async (context) => {
+  const { api, receiver } = await startDemo(0, 0, 0, ':memory:', 3);
+  context.after(() => {
+    api.close();
+    receiver.close();
+  });
+  const origin = `http://127.0.0.1:${api.address().port}`;
+  const accepted = await fetch(origin + '/events', {
+    method: 'POST',
+    body: JSON.stringify({ type: 'order.created', data: { orderId: '42' } }),
+  });
+  assert.equal(accepted.status, 202);
+  const source = accepted.headers.get('location');
+
+  async function settled(path) {
+    const deadline = Date.now() + 3500;
+    do {
+      const response = await fetch(origin + path);
+      assert.equal(response.status, 200);
+      const result = await response.json();
+      if (result.status !== 'pending') return result;
+      await delay(25);
+    } while (Date.now() < deadline);
+    assert.fail('Delivery did not settle');
+  }
+
+  const replay = (path) => fetch(origin + path + '/replay', { method: 'POST' });
+  assert.equal((await replay(source)).status, 409);
+  assert.equal((await replay('/events/unknown')).status, 404);
+  const original = await settled(source);
+  assert.equal(original.status, 'failed');
+  const response = await replay(source);
+  assert.equal(response.status, 202);
+  const replayPath = response.headers.get('location');
+  assert.notEqual(replayPath, source);
+  const delivered = await settled(replayPath);
+  assert.equal(delivered.status, 'delivered');
+  assert.equal(delivered.attempts.length, 1);
+  assert.equal((await replay(replayPath)).status, 409);
+  assert.deepEqual(await settled(source), original);
+
+  const { events } = await (await fetch(origin + '/events')).json();
+  assert.deepEqual(events.map(({ id, replayOf }) => [id, replayOf]), [
+    [delivered.id, original.id],
+    [original.id, null],
+  ]);
+});
