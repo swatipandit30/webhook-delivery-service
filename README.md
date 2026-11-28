@@ -49,6 +49,14 @@ Replace `EVENT_ID` with the failed event's ID. Replay returns 202 and a new stat
 
 The event list returns up to 50 recent deliveries, newest first, with their IDs, types, statuses and replay sources.
 
-## Next milestones
+## React dashboard
 
-- Build the React dashboard for delivery history and replay.
+Keep the API running on port 3000. In another terminal, run:
+
+```sh
+cd dashboard
+npm ci
+npm run dev
+```
+
+Open http://127.0.0.1:5173. Select a delivery to see its attempts. For a failed delivery, choose **Replay delivery** to queue and follow the new delivery. The dashboard refreshes every second. Vite proxies API requests to Node during local development. The static build (`npm run build`) needs a host that routes `/events` to the API.

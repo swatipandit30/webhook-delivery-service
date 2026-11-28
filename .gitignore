@@ -1,2 +1,4 @@
 /deliveries.sqlite
 /deliveries.sqlite-*
+/dashboard/node_modules/
+/dashboard/dist/
